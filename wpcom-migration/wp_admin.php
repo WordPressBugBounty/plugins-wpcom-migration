@@ -23,6 +23,31 @@ class WPCOMWPAdmin {
 		}
 	}
 
+	/**
+	 * Where the plugin's own entry points send the user. The Reprint screen
+	 * on a single site when it is loaded. While WordPress.com names the old
+	 * screen main, the old screen. The old screen on a network, where
+	 * the Reprint screen can't migrate, and in a source checkout without
+	 * plugin/vendor/, where the Reprint classes are absent.
+	 *
+	 * Not simply mainUrl(): siteInfoTags() posts that to the app as
+	 * `adminurl`, where it still describes the old screen.
+	 */
+	public function migrationScreenUrl() {
+		if (!is_multisite() && class_exists('\Automattic\WPCOM_Migration\Reprint\Settings_Page') && $this->reprintIsMain()) {
+			return \Automattic\WPCOM_Migration\Reprint\Settings_Page::page_url();
+		}
+		return $this->mainUrl();
+	}
+
+	/**
+	 * Whether WordPress.com names the Reprint screen main. False in a source
+	 * checkout without plugin/vendor/, where the Reprint classes are absent.
+	 */
+	private function reprintIsMain() {
+		return class_exists('\Automattic\WPCOM_Migration\Reprint\Main_Screen') && \Automattic\WPCOM_Migration\Reprint\Main_Screen::is_reprint();
+	}
+
 	function removeAdminNotices() {
 		if (WPCOMHelper::getRawParam('REQUEST', 'page') === $this->bvinfo->plugname) {
 			remove_all_actions('admin_notices');
@@ -36,8 +61,11 @@ class WPCOMWPAdmin {
 
 		if ($this->bvinfo->isActivateRedirectSet()) {
 			$this->settings->updateOption($this->bvinfo->plug_redirect, 'no');
-			if (!wp_doing_ajax()) {
-				wp_redirect($this->mainUrl());
+			// A bulk activation lands on the plugin list; it stays there.
+			if (!wp_doing_ajax() && !isset($_GET['activate-multi'])) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+				if (wp_redirect($this->migrationScreenUrl())) {
+					exit;
+				}
 			}
 		}
 	}
@@ -47,9 +75,34 @@ class WPCOMWPAdmin {
 		if (!is_array($brand) || (!array_key_exists('hide', $brand) && !array_key_exists('hide_from_menu', $brand))) {
 			$bname = $this->bvinfo->getBrandName();
 			$icon = $this->bvinfo->getBrandIcon();
-			add_menu_page($bname, $bname, 'manage_options', $this->bvinfo->plugname,
+			$hook = add_menu_page($bname, $bname, 'manage_options', $this->bvinfo->plugname,
 					array($this, 'adminPage'), $icon);
+
+			// On a single site the Reprint screen owns the sidebar entry.
+			// Removing the page from the $menu global leaves its callback
+			// hooked and its $_registered_pages entry set, so
+			// admin.php?page=wpcom-migration still renders and keeps the
+			// toplevel_page_wpcom-migration hook suffix its stylesheet and
+			// notice handling key on. The network admin, where the Reprint
+			// screen doesn't run, keeps this row, and so does a single site
+			// while WordPress.com names this screen main.
+			if (!is_multisite() && $this->reprintIsMain()) {
+				remove_menu_page($this->bvinfo->plugname);
+				add_action('load-'.$hook, array($this, 'setScreenTitle'));
+			}
+		} else {
+			// Whitelabelled out of the menu: the Reprint screen drops its row too.
+			add_filter('wpcom_migration_show_menu', '__return_false');
 		}
+	}
+
+	/**
+	 * Sets the old screen's <title>, which core otherwise looks up in the
+	 * sidebar rows.
+	 */
+	public function setScreenTitle() {
+		global $title;
+		$title = $this->bvinfo->getBrandName();
 	}
 
 	public function hidePluginDetails($plugin_metas, $slug) {
@@ -71,7 +124,7 @@ class WPCOMWPAdmin {
 	public function settingsLink($links, $file) {
 		if ( $file == plugin_basename( dirname(__FILE__).'/wpcom_migration.php' ) ) {
 			// phpcs:ignore WordPress.WP.I18n.MissingArgDomain
-			$links[] = '<a href="'.$this->mainUrl().'">'.__( 'Settings' ).'</a>';
+			$links[] = '<a href="'.$this->migrationScreenUrl().'">'.__( 'Settings' ).'</a>';
 		}
 		return $links;
 	}
