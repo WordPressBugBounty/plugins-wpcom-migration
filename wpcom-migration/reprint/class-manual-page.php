@@ -150,8 +150,7 @@ class Manual_Page {
 	}
 
 	/**
-	 * Takes the screen out of the sidebar, along with the row WordPress adds
-	 * for the parent the first time it gains a child.
+	 * Takes the screen out of the sidebar: it's a debugging screen.
 	 *
 	 * Can't run in add_admin_menu(): admin.php finds a submenu page's parent
 	 * by scanning $submenu, and it does that before it lets the request in,
@@ -160,7 +159,6 @@ class Manual_Page {
 	 */
 	public function hide_submenu() {
 		remove_submenu_page( Settings_Page::PAGE_SLUG, self::PAGE_SLUG );
-		remove_submenu_page( Settings_Page::PAGE_SLUG, Settings_Page::PAGE_SLUG );
 	}
 
 	/**
@@ -213,8 +211,7 @@ class Manual_Page {
 			$this->redirect_with_notice( 'not_configured' );
 		}
 
-		$state = Exporter::get_state();
-		if ( $state['secret_valid'] && get_option( Exporter::SECRET_OPTION ) === $secret ) {
+		if ( get_option( Exporter::SECRET_OPTION ) === $secret ) {
 			$this->redirect_with_notice( 'unchanged' );
 		}
 
@@ -332,7 +329,7 @@ class Manual_Page {
 			$this->render_secret_form( $state );
 		}
 
-		if ( $state['credential_valid'] ) {
+		if ( $state['has_credential'] ) {
 			$this->render_api_url();
 		}
 
@@ -357,7 +354,7 @@ class Manual_Page {
 	 * @param array $state Exporter::get_state().
 	 */
 	private function render_secret_form( array $state ) {
-		$stored_secret = $state['secret_valid'] ? (string) get_option( Exporter::SECRET_OPTION, '' ) : '';
+		$stored_secret = $state['has_secret'] ? (string) get_option( Exporter::SECRET_OPTION, '' ) : '';
 		?>
 		<h2><?php esc_html_e( 'Export secret', 'wpcom-migration' ); ?></h2>
 		<p><?php esc_html_e( 'Paste the secret supplied by WordPress.com.', 'wpcom-migration' ); ?></p>

@@ -330,6 +330,10 @@ return array(
 		'version' => 'dev-trunk',
 		'path'    => $baseDir . '/reprint/class-manual-page.php'
 	),
+	'Automattic\\WPCOM_Migration\\Reprint\\Proxied_Notice' => array(
+		'version' => 'dev-trunk',
+		'path'    => $baseDir . '/reprint/class-proxied-notice.php'
+	),
 	'Automattic\\WPCOM_Migration\\Reprint\\REST_Controller' => array(
 		'version' => 'dev-trunk',
 		'path'    => $baseDir . '/reprint/class-rest-controller.php'

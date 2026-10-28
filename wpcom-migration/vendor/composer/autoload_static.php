@@ -107,6 +107,7 @@ class ComposerStaticInitb0f08b481b4e392fc2bd7939f2b63053
         'Automattic\\WPCOM_Migration\\Reprint\\Key_Page' => __DIR__ . '/../..' . '/reprint/class-key-page.php',
         'Automattic\\WPCOM_Migration\\Reprint\\Main_Screen' => __DIR__ . '/../..' . '/reprint/class-main-screen.php',
         'Automattic\\WPCOM_Migration\\Reprint\\Manual_Page' => __DIR__ . '/../..' . '/reprint/class-manual-page.php',
+        'Automattic\\WPCOM_Migration\\Reprint\\Proxied_Notice' => __DIR__ . '/../..' . '/reprint/class-proxied-notice.php',
         'Automattic\\WPCOM_Migration\\Reprint\\REST_Controller' => __DIR__ . '/../..' . '/reprint/class-rest-controller.php',
         'Automattic\\WPCOM_Migration\\Reprint\\Settings_Page' => __DIR__ . '/../..' . '/reprint/class-settings-page.php',
         'Composer\\InstalledVersions' => __DIR__ . '/..' . '/composer/InstalledVersions.php',

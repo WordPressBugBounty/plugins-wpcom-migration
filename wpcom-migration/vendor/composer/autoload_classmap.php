@@ -87,6 +87,7 @@ return array(
     'Automattic\\WPCOM_Migration\\Reprint\\Key_Page' => $baseDir . '/reprint/class-key-page.php',
     'Automattic\\WPCOM_Migration\\Reprint\\Main_Screen' => $baseDir . '/reprint/class-main-screen.php',
     'Automattic\\WPCOM_Migration\\Reprint\\Manual_Page' => $baseDir . '/reprint/class-manual-page.php',
+    'Automattic\\WPCOM_Migration\\Reprint\\Proxied_Notice' => $baseDir . '/reprint/class-proxied-notice.php',
     'Automattic\\WPCOM_Migration\\Reprint\\REST_Controller' => $baseDir . '/reprint/class-rest-controller.php',
     'Automattic\\WPCOM_Migration\\Reprint\\Settings_Page' => $baseDir . '/reprint/class-settings-page.php',
     'Composer\\InstalledVersions' => $vendorDir . '/composer/InstalledVersions.php',
