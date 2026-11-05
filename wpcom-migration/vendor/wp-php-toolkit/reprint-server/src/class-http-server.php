@@ -4,10 +4,12 @@ namespace WordPress\Reprint\Server;
 
 use InvalidArgumentException;
 
+require_once __DIR__ . '/build-features.php';
+
 if (!class_exists('WordPress\\Reprint\\Server\\ResourceBudget', false)) {
     require_once __DIR__ . '/class-resource-budget.php';
 }
-if (!class_exists(PushConfigurationException::class, false)) {
+if (REPRINT_PUSH_AVAILABLE && !class_exists(PushConfigurationException::class, false)) {
     require_once __DIR__ . '/class-push-configuration-exception.php';
 }
 
@@ -60,7 +62,7 @@ final class HTTPServer {
         $this->cursor_header_name = $options['cursor_header_name'] ?? 'HTTP_X_EXPORT_CURSOR';
         $this->default_directory = $options['default_directory'] ?? null;
         $this->push_endpoints = null;
-        if (array_key_exists('push', $options)) {
+        if (REPRINT_PUSH_AVAILABLE && array_key_exists('push', $options)) {
             try {
                 if (!is_array($options['push'])) {
                     throw new InvalidArgumentException('The push HTTP server option must be an array.');
@@ -79,7 +81,7 @@ final class HTTPServer {
                 // phpcs:enable WordPress.Security.EscapeOutput.ExceptionNotEscaped
             }
         }
-        if (isset($options['database_push'])) {
+        if (REPRINT_PUSH_AVAILABLE && isset($options['database_push'])) {
             require_once __DIR__ . '/class-database-push-endpoints.php';
             $this->database_push_endpoints = new DatabasePushEndpoints($options['database_push']);
         }
@@ -115,7 +117,7 @@ final class HTTPServer {
     }
 
     /**
-     * Emits CORS headers and terminates OPTIONS preflight requests.
+     * Emits CORS headers when possible and terminates OPTIONS preflight requests.
      *
      * Must be called BEFORE authentication runs — browsers send
      * preflight OPTIONS without credentials, so the consumer must not
@@ -126,8 +128,8 @@ final class HTTPServer {
      * without the secret cannot export anything regardless of origin.
      *
      * For OPTIONS requests this terminates the process. For all other
-     * methods it just emits the headers and returns so the caller can
-     * continue with authentication and dispatch.
+     * methods it emits headers only if they have not been sent, then returns
+     * so the caller can continue with authentication and dispatch.
      *
      * @param string|true $origin The Access-Control-Allow-Origin value,
      *     or true as a shorthand for '*'.
@@ -155,7 +157,9 @@ final class HTTPServer {
         }
 
         $emit_header = ($io['header'] ?? null) ?? static function (string $h): void {
-            header($h);
+            if (!headers_sent()) {
+                header($h);
+            }
         };
         $terminate = ($io['exit'] ?? null) ?? static function (): void {
             exit;
@@ -205,7 +209,8 @@ final class HTTPServer {
     }
 
     /**
-     * Parses HTTP values, including raw or base64-encoded Unix and Windows paths.
+     * Parses HTTP values, including raw, base64, and rp.-prefixed ROT13-base64
+     * Unix and Windows paths.
      *
      * @param array<string, mixed> $get
      * @param array<string, mixed> $post
@@ -264,14 +269,14 @@ final class HTTPServer {
                 $path_values = is_array($value) ? $value : [$value];
                 $decoded_paths = [];
                 foreach ($path_values as $path_key => $path_value) {
-                    // Do not decode first: PHP accepts a raw path such as /tmp
+                    // Do not decode unmarked paths first: PHP accepts /tmp
                     // as strict base64 and turns it into unrelated bytes. Check
                     // for an absolute root in this source host's format before decoding.
                     if (is_string($path_value) && Utils::is_absolute_path($path_value, Utils::native_path_format())) {
                         $decoded_path = $path_value;
                     } else {
                         $decoded_path = is_string($path_value)
-                            ? base64_decode($path_value, true)
+                            ? Utils::decode_request_base64($path_value)
                             : false;
                     }
                     if (
@@ -285,7 +290,7 @@ final class HTTPServer {
                         // phpcs:disable WordPress.Security.EscapeOutput.ExceptionNotEscaped -- The exception reports the rejected HTTP parameter and value to the API caller.
                         throw new InvalidArgumentException(
                             $key . $entry
-                            . ' must be an absolute path or a base64-encoded absolute path; observed '
+                            . ' must be an absolute path, a base64-encoded absolute path, or an rp.-prefixed ROT13-base64 absolute path; observed '
                             . $observed . '.'
                         );
                         // phpcs:enable WordPress.Security.EscapeOutput.ExceptionNotEscaped
@@ -307,7 +312,8 @@ final class HTTPServer {
      * @return array<string, mixed>
      */
     public function normalize_config(array $config, array $server = []): array {
-        unset($config['_multisite']);
+        // HTTP callers upload file_list; file_list_path is for direct PHP calls.
+        unset($config['_multisite'], $config['file_list_path']);
         if ($this->multisite !== null) {
             // This existing wire value names the selected-site export format.
             // It does not require the client to create a multisite target.
@@ -348,10 +354,10 @@ final class HTTPServer {
     }
 
     public function decode_cursor(string $cursor_b64): string {
-        $cursor_json = base64_decode($cursor_b64, true);
+        $cursor_json = Utils::decode_request_base64($cursor_b64);
         if ($cursor_json === false) {
             throw new InvalidArgumentException(
-                'Cursor must be base64-encoded. Received invalid base64: ' . substr($cursor_b64, 0, 50)
+                'Cursor must be base64-encoded or rp.-prefixed ROT13-base64. Received invalid base64: ' . substr($cursor_b64, 0, 50)
             );
         }
 
@@ -385,6 +391,26 @@ final class HTTPServer {
             );
         }
 
+        if (strpos($endpoint, 'push_') === 0 && ( !REPRINT_PUSH_AVAILABLE || PHP_VERSION_ID < 70200 )) {
+            http_response_code(REPRINT_PUSH_AVAILABLE ? 503 : 403);
+            header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+            header('Pragma: no-cache');
+            header('Expires: 0');
+            // Hosts such as Hostinger rewrite domains so links and assets stay on a
+            // preview domain while the stored site URL still uses the real domain.
+            // This lets users preview a site before changing DNS, but also rewrites
+            // application/json bodies. Octet-stream bypasses Hostinger's filter.
+            header('Content-Type: application/octet-stream');
+            echo json_encode([
+                'status' => 'rejected',
+                'reason' => 'push_disabled',
+                'detail' => REPRINT_PUSH_AVAILABLE
+                    ? 'Push endpoints require PHP 7.2 or newer; observed PHP ' . PHP_VERSION . '.'
+                    : 'Push is not included in this build.',
+            ]);
+            return;
+        }
+
         if (!isset($this->handlers[$endpoint])) {
             throw new InvalidArgumentException(
                 "Invalid endpoint: '{$endpoint}'. Valid endpoints: " . $this->get_valid_endpoints_message()
@@ -393,23 +419,6 @@ final class HTTPServer {
 
         $handler = $this->handlers[$endpoint];
         if (self::is_push_endpoint($endpoint)) {
-            if (PHP_VERSION_ID < 70200) {
-                http_response_code(503);
-                header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-                header('Pragma: no-cache');
-                header('Expires: 0');
-                // Hosts such as Hostinger rewrite domains so links and assets stay on a
-                // preview domain while the stored site URL still uses the real domain.
-                // This lets users preview a site before changing DNS, but also rewrites
-                // application/json bodies. Octet-stream bypasses Hostinger's filter.
-                header('Content-Type: application/octet-stream');
-                echo json_encode([
-                    'status' => 'rejected',
-                    'reason' => 'push_disabled',
-                    'detail' => 'Push endpoints require PHP 7.2 or newer; observed PHP ' . PHP_VERSION . '.',
-                ]);
-                return;
-            }
             call_user_func($handler, $config);
             return;
         }

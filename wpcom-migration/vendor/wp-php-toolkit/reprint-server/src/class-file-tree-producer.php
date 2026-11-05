@@ -138,6 +138,7 @@ class FileTreeProducer
      * - path: the file/dir/symlink we were processing or just finished
      * - ctime: the ctime of the file when we started (for change detection)
      * - bytes: byte offset within the file (0 if finished or non-file)
+     * Active file paths must be absolute filesystem names; byte offsets are non-negative integers.
      *
      * On resume, position within the paths array is determined by binary
      * search based on the path. This ensures correctness even when the
@@ -149,6 +150,13 @@ class FileTreeProducer
         if ($cursor === null && json_last_error() !== JSON_ERROR_NONE) {
             throw new InvalidArgumentException(
                 "Invalid cursor format: " . json_last_error_msg()
+            );
+        }
+
+        if (!is_array($cursor)) {
+            throw new InvalidArgumentException(
+                // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Protocol error, never HTML output.
+                'File cursor must be a JSON object or array; received ' . gettype($cursor) . '.'
             );
         }
 
@@ -173,12 +181,35 @@ class FileTreeProducer
             return;
         }
 
-        $path = isset($cursor["path"]) ? base64_decode($cursor["path"]) : null;
+        // Keep the producer's path spelling, including dot segments in absolute paths.
+        $path = null;
+        if (isset($cursor['path'])) {
+            $path = is_string($cursor['path']) ? base64_decode($cursor['path'], true) : false;
+            if ($path === false) {
+                throw new InvalidArgumentException(
+                    // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Protocol error, never HTML output.
+                    'File cursor path must be valid base64; received ' . json_encode($cursor['path']) . '.'
+                );
+            }
+        }
+        $byte_offset = array_key_exists('bytes', $cursor) ? $cursor['bytes'] : 0;
+        if (!is_int($byte_offset) || $byte_offset < 0) {
+            throw new InvalidArgumentException(
+                // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Protocol error, never HTML output.
+                'File cursor bytes must be a non-negative integer; received ' . json_encode($byte_offset) . '.'
+            );
+        }
+        // A zero position marks a completed entry, including a missing relative path.
+        if ($path !== null && $byte_offset > 0 && ( strpos($path, "\0") !== false || !Utils::is_absolute_path($path, Utils::native_path_format()) )) {
+            throw new InvalidArgumentException(
+                // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Protocol error, never HTML output.
+                'File cursor path must be an absolute filesystem path without NUL bytes when resuming file bytes; received ' . json_encode($path) . '.'
+            );
+        }
         if ($path !== null && $this->multisite_selection !== null) {
             $this->multisite_selection->assert_path_allowed($path);
         }
         $ctime = $cursor["ctime"] ?? null;
-        $byte_offset = $cursor["bytes"] ?? 0;
 
         $this->last_emitted_path = null;
         $this->last_emitted_ctime = null;
@@ -186,7 +217,8 @@ class FileTreeProducer
         if ($path !== null && $byte_offset > 0) {
             // Resuming mid-file.
             clearstatcache(true, $path);
-            $size = @filesize(Utils::source_io_path($path));
+            $source_path = $this->pull_file_source_path($path);
+            $size = @filesize(Utils::source_io_path($source_path));
             if ($size === false) {
                 // File disappeared; treat as completed.
                 $this->current_file_meta = null;
@@ -195,6 +227,7 @@ class FileTreeProducer
             } else {
                 $this->current_file_meta = [
                     "path" => $path,
+                    "source_path" => $source_path,
                     "ctime" => $ctime,
                     "size" => $size,
                 ];
@@ -341,7 +374,8 @@ class FileTreeProducer
                 return null;
             }
 
-            $info = $this->lstat_path($resolved_path);
+            $source_path = $this->pull_file_source_path($resolved_path);
+            $info = $this->lstat_path($source_path);
             if ($info === null) {
                 continue;
             }
@@ -378,6 +412,7 @@ class FileTreeProducer
                 }
                 $this->current_file_meta = [
                     "path" => $resolved_path,
+                    "source_path" => $source_path,
                     "ctime" => $ctime,
                     "size" => $size,
                 ];
@@ -403,8 +438,12 @@ class FileTreeProducer
         }
 
         clearstatcache(true, $path);
-        if (Utils::is_absolute_path($path, Utils::native_path_format()) && (file_exists(Utils::source_io_path($path)) || Utils::source_is_link($path))) {
-            return $path;
+        if (Utils::is_absolute_path($path, Utils::native_path_format())) {
+            // A missing full path must not be retried beneath a source directory:
+            // that can return a different file after the requested one disappears.
+            return file_exists(Utils::source_io_path($path)) || Utils::source_is_link($path)
+                ? $path
+                : null;
         }
 
         foreach ($this->directories as $dir) {
@@ -424,12 +463,13 @@ class FileTreeProducer
      */
     private function stream_file_chunk(array $file): void
     {
+        $source_path = $file["source_path"];
         if ($this->streaming_file_handle === null) {
             if ($this->multisite_selection !== null) {
                 $this->multisite_selection->assert_path_allowed($file["path"]);
             }
-            clearstatcache(true, $file["path"]);
-            $pre_stat = @Utils::source_lstat($file["path"]);
+            clearstatcache(true, $source_path);
+            $pre_stat = @Utils::source_lstat($source_path);
             if ($pre_stat === false || (($pre_stat["mode"] & 0170000) !== 0100000)) {
                 $this->streaming_file_handle = null;
                 $this->current_file_meta = null;
@@ -446,7 +486,7 @@ class FileTreeProducer
                 return;
             }
 
-            $this->streaming_file_handle = @fopen(Utils::source_io_path($file["path"]), "r");
+            $this->streaming_file_handle = @fopen(Utils::source_io_path($source_path), "r");
             if (!$this->streaming_file_handle) {
                 $this->streaming_file_handle = null;
                 $this->current_file_meta = null;
@@ -512,8 +552,8 @@ class FileTreeProducer
         $error_type = "file_changed";
 
         // Detect whether the file changed while we were reading it.
-        clearstatcache(true, $file["path"]);
-        $stat = @stat(Utils::source_io_path($file["path"]));
+        clearstatcache(true, $source_path);
+        $stat = @stat(Utils::source_io_path($source_path));
         if ($stat === false) {
             $changed = true;
             $error_type = "file_missing";
@@ -572,6 +612,16 @@ class FileTreeProducer
             $this->last_emitted_ctime = $file["ctime"];
             $this->current_file_meta = null;
         }
+    }
+
+    private function pull_file_source_path(string $path): string
+    {
+        $source_path = Utils::pull_file_source_path($path);
+        if ($source_path === null) {
+            // phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- Protocol error, not HTML.
+            throw new InvalidArgumentException('Source file is excluded from pull: ' . $path);
+        }
+        return $source_path;
     }
 
     /**
